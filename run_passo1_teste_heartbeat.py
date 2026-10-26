@@ -1,33 +1,32 @@
-import time
+import argparse
 import logging
+import time
 from mavlink_interface import MAVLinkInterface
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s.%(msecs)03d [%(levelname)s] [%(threadName)s] %(message)s"
-)
-logger = logging.getLogger("TestePasso1")
 
 def main():
-    mav = MAVLinkInterface("udpin:127.0.0.1:14550")
-    mav.connect()
-    
-    logger.info("Aguardando 3 segundos para estabilização da conexão...")
-    time.sleep(3.0)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--conexao', default='udpin:0.0.0.0:14552')
+    parser.add_argument('--log', default='heartbeat_pt18796.log')
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s [%(threadName)s] %(levelname)s %(name)s: %(message)s',
+                        handlers=[logging.StreamHandler(), logging.FileHandler(args.log, encoding='utf-8', mode='w')])
+    log = logging.getLogger('TESTE_HEARTBEAT')
+    mav = MAVLinkInterface(args.conexao)
+    try:
+        mav.connect()
+        log.info('GPS pronto: %s', mav.verify_gps_readiness())
+        log.info('Modo inicial: %s; armado: %s', mav.current_mode, mav.is_armed)
+        log.info('INICIO BLOQUEIO DO LACO PRINCIPAL POR 10 SEGUNDOS')
+        inicio = time.monotonic()
+        time.sleep(10)
+        log.info('FIM BLOQUEIO, duração %.2f s', time.monotonic() - inicio)
+        log.info('Modo final: %s; armado: %s', mav.current_mode, mav.is_armed)
+        log.info('Verifique HEARTBEAT_TX no intervalo e compare com log do autopiloto; envio não comprova recepção nem ausência de failsafe.')
+    finally:
+        mav.close()
 
-    logger.warning("=================================================================")
-    logger.warning("INICIANDO BLOQUEIO ARTIFICIAL DO LAÇO PRINCIPAL POR 10 SEGUNDOS")
-    logger.warning("(Simulação da carga de firmware / modelo neural da IMX500)")
-    logger.warning("=================================================================")
-    
-    # Bloqueio artificial da MainThread
-    time.sleep(10.0)
 
-    logger.info("=================================================================")
-    logger.info("LAÇO PRINCIPAL RETOMOU A EXECUÇÃO!")
-    logger.info(f"Status do Piloto: Conectado. Modo: {mav.current_mode}. Armado: {mav.is_armed}")
-    logger.info("=================================================================")
-    mav.close()
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
