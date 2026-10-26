@@ -109,7 +109,7 @@ class MAVLinkInterface:
     def verify_gps_readiness(self) -> bool:
         """Exige telemetria recente, fix 3D, >=10 satélites e HDOP <=1,40."""
         fresh = self.gps_received_at is not None and time.monotonic() - self.gps_received_at <= 2.0
-        if fresh and self.gps_fix >= 3 and self.satellites >= 10 and self.hdop <= 1.40:
+        if fresh and self.gps_fix >= 3 and 10 <= self.satellites < 255 and self.hdop <= 1.40:
             logger.info(f"[GPS OK] Fix={self.gps_fix}, Satélites={self.satellites}, HDOP={self.hdop:.2f}")
             return True
         
