@@ -16,6 +16,10 @@ file_handler = logging.FileHandler("missao_sitl_execucao.log", mode="w")
 file_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
+logging.getLogger().setLevel(logging.INFO)
+logging.getLogger().addHandler(file_handler)
+logging.getLogger().addHandler(console_handler)
+logger.propagate = False
 
 class Context:
     def __init__(self, mav, perception):
@@ -24,8 +28,8 @@ class Context:
 
 def replay_percepcao_colega(consumer: PerceptionConsumer):
     """Simula o envio de dados da câmera IMX500"""
-    logger.info("[REPLAY] Aguardando 12 segundos para a decolagem...")
-    time.sleep(12.0)
+    logger.info("[REPLAY] Iniciando detecções simuladas após a decolagem...")
+    time.sleep(1.0)
     
     logger.info("[REPLAY] Drone voando. Injetando primeira detecção instável...")
     consumer.feed_contract_payload({
@@ -36,8 +40,8 @@ def replay_percepcao_colega(consumer: PerceptionConsumer):
     time.sleep(1.5)
 
     logger.info("[REPLAY] Alvo estabilizado! Iniciando aproximação...")
-    for i in range(15):
-        fator = 1.0 - (i / 15.0)
+    for i in range(180):
+        fator = max(0.0, 1.0 - (i / 30.0))
         consumer.feed_contract_payload({
             "timestamp_ms": int(time.time() * 1000), "target_id": "ALVO_01",
             "bbox": [120, 110, 220, 210], "err_x": 0.35 * fator, "err_y": -0.25 * fator,
@@ -51,11 +55,15 @@ def main():
     mav.connect()
     perception = PerceptionConsumer(timeout_ms=500, min_confidence=0.65)
 
-    threading.Thread(target=replay_percepcao_colega, args=(perception,), daemon=True).start()
+    replay_iniciado = False
 
     # --- LAÇO DE ESPERA ATIVA DE TELEMETRIA ---
     logger.warning("Aguardando sincronização da telemetria MAVLink e satélites...")
+    gps_inicio = time.monotonic()
     while not mav.verify_gps_readiness():
+        if time.monotonic() - gps_inicio > 60:
+            mav.close()
+            raise RuntimeError("GPS não ficou pronto em 60 segundos")
         logger.info("GPS ainda não validado pela telemetria. A aguardar 2 segundos...")
         time.sleep(2.0)
     logger.info("Sinal GPS validado com sucesso! A autorizar início da máquina de estados.")
@@ -72,22 +80,31 @@ def main():
 
     current = "DECOLAR"
     state_obj = states[current]
-    state_obj.on_enter(ctx)
+    houve_timeout = False
 
     try:
+        state_obj.on_enter(ctx)
         while current != "CONCLUIDO":
             next_state = state_obj.execute(ctx)
             if next_state:
+                if time.time() - state_obj.start_time > state_obj.timeout_sec:
+                    houve_timeout = True
                 state_obj.on_exit(ctx)
                 if next_state == "CONCLUIDO":
                     break
                 if next_state == "FALHA_POUSO":
                     raise RuntimeError("Pouso não confirmado: tempo limite excedido")
                 current = next_state
+                if current == "DESLOCAR" and not replay_iniciado:
+                    threading.Thread(target=replay_percepcao_colega, args=(perception,), daemon=True).start()
+                    replay_iniciado = True
                 state_obj = states[current]
                 state_obj.on_enter(ctx)
             time.sleep(0.05)
-        logger.info("[SUCESSO] Missão concluída na íntegra em ambiente simulado!")
+        if houve_timeout:
+            logger.warning("[FALHA] Missão encerrada após timeout; pouso confirmado")
+        else:
+            logger.info("[SUCESSO] Sequência simulada concluída; pouso confirmado")
     finally:
         mav.close()
 
