@@ -154,13 +154,13 @@ class LandState(State):
         logger.info("[POUSAR] Modo LAND acionado.")
 
     def execute(self, context) -> str:
-        timeout_res = super().execute(context)
-        if timeout_res:
-            return timeout_res
-
         if not context.mav.is_armed:
             logger.info("[POUSAR] Motores desarmados no solo. Missão concluída!")
             return "CONCLUIDO"
+
+        if time.time() - self.start_time > self.timeout_sec:
+            logger.error("[POUSAR] Timeout sem confirmação de desarmamento")
+            return "FALHA_POUSO"
 
         time.sleep(0.5)
         return None

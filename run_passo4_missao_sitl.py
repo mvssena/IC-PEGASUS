@@ -81,6 +81,8 @@ def main():
                 state_obj.on_exit(ctx)
                 if next_state == "CONCLUIDO":
                     break
+                if next_state == "FALHA_POUSO":
+                    raise RuntimeError("Pouso não confirmado: tempo limite excedido")
                 current = next_state
                 state_obj = states[current]
                 state_obj.on_enter(ctx)
