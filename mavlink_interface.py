@@ -15,6 +15,7 @@ class MAVLinkInterface:
         self.gps_fix = 0
         self.satellites = 0
         self.hdop = 99.9
+        self.gps_received_at = None
         self.current_altitude = 0.0
         self.is_armed = False
         self.current_mode = "UNKNOWN"
@@ -48,15 +49,6 @@ class MAVLinkInterface:
             5, 1
         )
 
-        # Desativa travas de PreArm internas do simulador (ARMING_CHECK = 0)
-        self.master.mav.param_set_send(
-            self.master.target_system,
-            self.master.target_component,
-            b'ARMING_CHECK',
-            0,
-            mavutil.mavlink.MAV_PARAM_TYPE_INT32
-        )
-
         self.running = True
         self._hb_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._rx_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
@@ -72,6 +64,7 @@ class MAVLinkInterface:
                     mavutil.mavlink.MAV_AUTOPILOT_INVALID,
                     0, 0, 0
                 )
+                logger.info("[HEARTBEAT_TX] enviado monotonic=%.3f", time.monotonic())
             except Exception as e:
                 logger.error(f"Erro ao enviar Heartbeat: {e}")
             time.sleep(1.0)
@@ -87,9 +80,13 @@ class MAVLinkInterface:
                 if msg_type == "GPS_RAW_INT":
                     self.gps_fix = msg.fix_type
                     self.satellites = msg.satellites_visible
-                    # Converte eph de centímetros (ex: 120) para decimal (1.20)
+                    # eph = HDOP * 100; 65535 indica valor desconhecido.
                     raw_eph = msg.eph
-                    self.hdop = (raw_eph / 100.0) if raw_eph > 10 else float(raw_eph)
+                    self.hdop = raw_eph / 100.0 if raw_eph != 65535 else float('inf')
+                    self.gps_received_at = time.monotonic()
+
+                elif msg_type == "STATUSTEXT":
+                    logger.warning("[AUTOPILOT] %s", msg.text)
 
                 elif msg_type == "GLOBAL_POSITION_INT":
                     self.current_altitude = msg.relative_alt / 1000.0
@@ -106,20 +103,18 @@ class MAVLinkInterface:
                             reverse_modes = {v: k for k, v in modes.items()}
                             self.current_mode = reverse_modes.get(msg.custom_mode, "UNKNOWN")
             except Exception:
-                pass
+                logger.exception("Erro recebendo telemetria")
+                time.sleep(0.1)
 
     def verify_gps_readiness(self) -> bool:
-        """Verifica o GPS ou libera automaticamente em modo de simulação SITL."""
-        if self.gps_fix >= 3 and self.satellites >= 10 and self.hdop <= 1.40:
+        """Exige telemetria recente, fix 3D, >=10 satélites e HDOP <=1,40."""
+        fresh = self.gps_received_at is not None and time.monotonic() - self.gps_received_at <= 2.0
+        if fresh and self.gps_fix >= 3 and self.satellites >= 10 and self.hdop <= 1.40:
             logger.info(f"[GPS OK] Fix={self.gps_fix}, Satélites={self.satellites}, HDOP={self.hdop:.2f}")
             return True
         
-        # Fallback para quando o espelhamento do Mission Planner omite GPS_RAW_INT
-        logger.warning(f"[SITL GPS OVERRIDE] Leitura atual (Fix={self.gps_fix}, Sats={self.satellites}, HDOP={self.hdop:.2f}). Simulando GPS pronto (Fix=3, Sats=12, HDOP=0.95) para liberar missão SITL!")
-        self.gps_fix = 3
-        self.satellites = 12
-        self.hdop = 0.95
-        return True
+        logger.warning("[GPS RECUSADO] recente=%s fix=%s satélites=%s HDOP=%.2f", fresh, self.gps_fix, self.satellites, self.hdop)
+        return False
 
     def set_mode(self, mode_name: str):
         modes = self.master.mode_mapping()
@@ -133,14 +128,14 @@ class MAVLinkInterface:
         if not self.verify_gps_readiness():
             return False
 
-        logger.info("Enviando comando para ARMAR motores (Force Arm ativo)...")
+        logger.info("Enviando comando normal de armamento...")
         self.master.mav.command_long_send(
             self.master.target_system,
             self.master.target_component,
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
             0,
             1,      # 1 = Armar
-            21196,  # 21196 = Código oficial do ArduPilot para Forçar Armamento em SITL
+            0,      # Não força armamento
             0, 0, 0, 0, 0
         )
 
@@ -151,10 +146,8 @@ class MAVLinkInterface:
                 return True
             time.sleep(0.5)
 
-        # Se a flag demorar a atualizar no espelhamento, assume armado após o Force Arm
-        self.is_armed = True
-        logger.info("Comando de armamento concluído!")
-        return True
+        logger.error("Armamento não confirmado pela telemetria")
+        return False
 
     def send_body_velocity(self, vx: float, vy: float, vz: float):
         """Envia velocidades no referencial do corpo (MAV_FRAME_BODY_NED)."""
